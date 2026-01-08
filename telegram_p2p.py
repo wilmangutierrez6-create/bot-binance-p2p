@@ -7,7 +7,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
 # ==========================================
 # 🔐 TOKEN DEL BOT
 # ==========================================
-TOKEN = "8373034080:AAG61tVcsAfeAmGsyBReQiveJcNZNfsKSkA"
+TOKEN = "8373034080:AAEWfcJatDiXCNYzpo2ZhIL4QcgO7RJqLog"
 
 # --- CONFIGURACIÓN ---
 BANCO = "BANESCO"
@@ -192,6 +192,7 @@ if __name__ == '__main__':
     app.run_polling()
 
     
+
 
 
 
