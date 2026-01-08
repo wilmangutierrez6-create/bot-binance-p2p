@@ -180,6 +180,7 @@ async def vigilar_mercado(context: ContextTypes.DEFAULT_TYPE):
 if __name__ == '__main__':
     
     from keep_alive import keep_alive
+    keep_alive()
     
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -189,4 +190,5 @@ if __name__ == '__main__':
     app.job_queue.run_repeating(vigilar_mercado, interval=TIEMPO_REVISION, first=10)
     print("🤖 Bot Manual Corriendo...")
     app.run_polling()
+
     
