@@ -6,7 +6,7 @@ import requests
 from keep_alive import keep_alive
 
 # --- ⚠️ PEGA TU TOKEN NUEVO AQUÍ ---
-TOKEN = "7658418390:AAETeKF0VhNY1PhgC5QF-iyg9oLWfbsgZbg" 
+TOKEN = "7658418390:AAEVAIV5r2Sb33IV-mkig5yd8hqHXegU47E" 
 
 # Configuración Global
 TIEMPO_REVISION = 60
