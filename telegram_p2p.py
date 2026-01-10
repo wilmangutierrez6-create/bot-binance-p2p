@@ -6,7 +6,7 @@ import requests
 from keep_alive import keep_alive
 
 # --- CONFIGURACIÓN PRINCIPAL ---
-TOKEN = "8172449537:AAGWAtPtGE4mkWblKUm29kqgTZFGjfXev30"  # <--- ¡PEGA TU TOKEN AQUÍ!
+TOKEN = "7658418390:AAETeKF0VhNY1PhgC5QF-iyg9oLWfbsgZbg"  # <--- ¡PEGA TU TOKEN AQUÍ!
 
 # Configuración de Mercado
 TIEMPO_REVISION = 60  # Segundos entre revisiones
