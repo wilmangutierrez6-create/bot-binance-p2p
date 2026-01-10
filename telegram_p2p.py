@@ -1,199 +1,234 @@
 import logging
 import asyncio
-import requests
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import requests
+from keep_alive import keep_alive
 
-# ==========================================
-# 🔐 TOKEN DEL BOT
-# ==========================================
-TOKEN = "8172449537:AAELeQefDWjhsf-LAf-dDmapbEMXLDdT1aQ"
+# --- CONFIGURACIÓN PRINCIPAL ---
+TOKEN = "8172449537:AAELeQefDWjhsf-LAf-dDmapbEMXLDdT1aQ"  # <--- ¡PEGA TU TOKEN AQUÍ!
 
-# --- CONFIGURACIÓN ---
-BANCO = "BANESCO"
-TIEMPO_REVISION = 60 
-COMISION_BINANCE = 0.0014 
+# Configuración de Mercado
+TIEMPO_REVISION = 60  # Segundos entre revisiones
+COMISION_BINANCE = 0.001  # 0.1% Taker
 
-# Base de datos en memoria
-# Estructura: { chat_id: { 'capital': 6500, 'meta': 85, 'f_venta': '4000000', 'f_compra': '500000' } }
-usuarios_db = {}
+# --- BASE DE DATOS EN MEMORIA (DICCIONARIO) ---
+# Estructura: { user_id: { 'capital': 0, 'meta': 0, 'f_venta': 0, 'f_compra': 0, 'activo': False } }
+USERS_DB = {} 
 
-# Valores por defecto si no se configuran manual
-DEF_FILTRO_VENTA = "4000000" # Buscamos en tabla Verde (Tu Venta)
-DEF_FILTRO_COMPRA = "500000" # Buscamos en tabla Roja (Tu Compra)
+# Configuración de Logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-# --- LÓGICA DE BINANCE (FILTROS MANUALES) ---
-def obtener_precio_competencia(estrategia, monto_filtro_usuario):
+async def obtener_precio_competencia(tipo, filtro_monto):
     """
-    Ahora esta función es 'obediente': Busca exactamente con el monto
-    que el usuario configuró en Telegram.
+    Consulta a Binance P2P.
+    tipo: "BUY" (para ver competencia de venta) o "SELL" (para ver competencia de compra)
     """
     url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
-    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
-    
-    trade_type_api = ""
-    
-    # ESTRATEGIA: TU VENTA (Miras la Tabla Verde / 'Comprar')
-    if estrategia == "TU_VENTA":
-        trade_type_api = "BUY" 
-
-    # ESTRATEGIA: TU COMPRA (Miras la Tabla Roja / 'Vender')
-    elif estrategia == "TU_COMPRA":
-        trade_type_api = "SELL"
-
-    payload = {
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/json"
+    }
+    data = {
         "asset": "USDT",
         "fiat": "VES",
-        "merchantCheck": True, 
+        "merchantCheck": False,
         "page": 1,
-        "rows": 5, 
-        "payTypes": [BANCO],
-        "publisherType": "merchant", 
-        "tradeType": trade_type_api,
-        "transAmount": str(monto_filtro_usuario) # <--- AQUI ENTRA TU VALOR MANUAL
+        "publisherType": None,
+        "rows": 10,
+        "tradeType": tipo,
+        "transAmount": filtro_monto
     }
-
+    
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        data = response.json()
+        response = requests.post(url, json=data, headers=headers, timeout=5)
+        resultados = response.json()['data']
         
-        if data["data"]:
-            return float(data["data"][0]["adv"]["price"])
-
-    except Exception as e:
-        print(f"Error API ({estrategia}): {e}")
-        pass
-        
-    return 0.0
-
-# --- COMANDOS TELEGRAM ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 **Monitor P2P Manual**\n\n"
-        "1️⃣ Configura Capital y Meta:\n"
-        "`/config [CAPITAL] [GANANCIA]`\n"
-        "   Ej: `/config 6500 85`\n\n"
-        "2️⃣ Configura los Filtros de Monto (VES):\n"
-        "`/filtros [MONTO_TU_VENTA] [MONTO_TU_COMPRA]`\n"
-        "   Ej: `/filtros 4000000 500000`\n"
-        "   _(Esto buscará precios en la tabla verde por 4M y en la roja por 500k)_",
-        parse_mode="Markdown"
-    )
-
-async def config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    try:
-        capital = float(context.args[0])
-        meta = float(context.args[1])
-        
-        # Si ya existe el usuario, conservamos sus filtros, si no, ponemos default
-        if chat_id not in usuarios_db:
-            usuarios_db[chat_id] = {
-                'capital': capital, 'meta': meta, 
-                'f_venta': DEF_FILTRO_VENTA, 'f_compra': DEF_FILTRO_COMPRA
-            }
+        if resultados:
+            # Tomamos el primer precio (el mejor del mercado)
+            precio = float(resultados[0]['adv']['price'])
+            return precio
         else:
-            usuarios_db[chat_id]['capital'] = capital
-            usuarios_db[chat_id]['meta'] = meta
-            
-        await update.message.reply_text(f"✅ Capital: {capital} USDT | Meta: {meta} USDT")
-    except:
-        await update.message.reply_text("❌ Error. Ej: `/config 6500 85`")
+            return None
+    except Exception as e:
+        print(f"Error conexión Binance: {e}")
+        return None
 
-async def filtros(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id not in usuarios_db:
-         await update.message.reply_text("⚠️ Primero usa /config")
-         return
-
-    try:
-        # El usuario envía: /filtros 4000000 500000
-        f_venta = context.args[0] # Monto para la tabla verde
-        f_compra = context.args[1] # Monto para la tabla roja
-        
-        usuarios_db[chat_id]['f_venta'] = f_venta
-        usuarios_db[chat_id]['f_compra'] = f_compra
-        
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    
+    # Registramos al usuario si no existe
+    if user_id not in USERS_DB:
+        USERS_DB[user_id] = {
+            'capital': 0, 
+            'meta': 0, 
+            'f_venta': 4000000,   # Filtro por defecto
+            'f_compra': 500000,   # Filtro por defecto
+            'activo': False
+        }
         await update.message.reply_text(
-            f"✅ **Filtros Actualizados**\n"
-            f"🟢 Tu Venta (Tabla Verde): `{f_venta}` VES\n"
-            f"🔴 Tu Compra (Tabla Roja): `{f_compra}` VES",
+            f"👋 ¡Hola {user.first_name}! Bienvenido al Monitor P2P Comunitario.\n\n"
+            "Este bot es INDIVIDUAL. Tu configuración es privada.\n\n"
+            "⚙️ **Paso 1:** Configura tu capital y meta:\n"
+            "`/config [CAPITAL] [GANANCIA]`\n"
+            "Ej: `/config 1000 20`\n\n"
+            "⚙️ **Paso 2:** (Opcional) Filtros de monto:\n"
+            "`/filtros [MONTO_VENTA] [MONTO_COMPRA]`",
             parse_mode="Markdown"
         )
-    except:
-        await update.message.reply_text("❌ Error. Ej: `/filtros 4000000 500000`")
+    else:
+        await update.message.reply_text(f"👋 ¡Hola de nuevo {user.first_name}! Ya estás registrado. Usa /status para ver tus datos.")
+
+async def config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    try:
+        args = context.args
+        if len(args) != 2:
+            await update.message.reply_text("⚠️ Error. Usa: `/config [CAPITAL] [META]`", parse_mode="Markdown")
+            return
+
+        capital = float(args[0])
+        meta = float(args[1])
+        
+        # Guardamos en la "carpeta" de este usuario específico
+        if user_id not in USERS_DB: USERS_DB[user_id] = {'f_venta': 4000000, 'f_compra': 500000}
+        
+        USERS_DB[user_id]['capital'] = capital
+        USERS_DB[user_id]['meta'] = meta
+        USERS_DB[user_id]['activo'] = True  # Activamos al usuario
+        
+        await update.message.reply_text(
+            f"✅ **Configuración Personal Guardada**\n"
+            f"💰 Capital: {capital} USDT\n"
+            f"🎯 Meta: {meta} USDT\n\n"
+            f"🚀 ¡Ahora recibirás alertas cuando cumplas TU meta!",
+            parse_mode="Markdown"
+        )
+        
+    except ValueError:
+        await update.message.reply_text("⚠️ Los valores deben ser números.")
+
+async def filtros(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    try:
+        args = context.args
+        if len(args) != 2:
+            await update.message.reply_text("⚠️ Usa: `/filtros [MONTO_VENTA] [MONTO_COMPRA]`")
+            return
+
+        f_venta = float(args[0])
+        f_compra = float(args[1])
+        
+        if user_id not in USERS_DB: 
+            await update.message.reply_text("⚠️ Primero usa /start")
+            return
+
+        USERS_DB[user_id]['f_venta'] = f_venta
+        USERS_DB[user_id]['f_compra'] = f_compra
+        
+        await update.message.reply_text(
+            f"✅ **Filtros Personales Actualizados**\n"
+            f"🟢 Tu Venta (Tabla Verde): {f_venta:.0f} VES\n"
+            f"🔴 Tu Compra (Tabla Roja): {f_compra:.0f} VES",
+            parse_mode="Markdown"
+        )
+    except ValueError:
+        await update.message.reply_text("⚠️ Usa números enteros sin puntos ni comas.")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id in usuarios_db:
-        datos = usuarios_db[chat_id]
-        
-        # Usamos los filtros guardados del usuario
-        p_venta = obtener_precio_competencia("TU_VENTA", datos['f_venta']) 
-        p_compra = obtener_precio_competencia("TU_COMPRA", datos['f_compra']) 
-        
-        if p_venta > 0 and p_compra > 0:
-            cap = datos['capital']
-            bruto_ves = cap * p_venta
-            neto_ves = bruto_ves * (1 - COMISION_BINANCE)
-            bruto_usdt_recuperados = neto_ves / p_compra
-            neto_usdt_final = bruto_usdt_recuperados * (1 - COMISION_BINANCE)
-            ganancia = neto_usdt_final - cap
-            
-            await update.message.reply_text(
-                f"📊 **Estado (Filtros: {datos['f_venta']} / {datos['f_compra']})**\n"
-                f"📈 Tu Venta: {p_venta:.2f}\n"
-                f"📉 Tu Compra: {p_compra:.2f}\n"
-                f"💰 Ganancia Neta: {ganancia:.2f} USDT", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("🔎 Buscando precios...")
+    user_id = update.effective_user.id
+    if user_id in USERS_DB and USERS_DB[user_id].get('activo'):
+        data = USERS_DB[user_id]
+        await update.message.reply_text(
+            f"📊 **TU ESTADO ACTUAL**\n"
+            f"👤 Usuario: {update.effective_user.first_name}\n"
+            f"💰 Capital: {data['capital']} USDT\n"
+            f"🎯 Meta: {data['meta']} USDT\n"
+            f"🔍 Filtros: {data['f_venta']} / {data['f_compra']} VES\n"
+            f"✅ **Monitoreo: ACTIVO**",
+            parse_mode="Markdown"
+        )
     else:
-        await update.message.reply_text("⚠️ Usa /start para configurar.")
+        await update.message.reply_text("❌ No tienes configuración activa. Usa `/config`.")
 
 async def vigilar_mercado(context: ContextTypes.DEFAULT_TYPE):
-    if not usuarios_db:
+    """
+    Esta función corre cada 60 segundos.
+    1. Obtiene precios generales de Binance.
+    2. Recorre la lista de usuarios y calcula la ganancia para CADA UNO.
+    """
+    if not USERS_DB:
+        print("💤 Nadie configurado todavía...")
         return
 
-    # Iteramos por cada usuario porque cada uno puede tener filtros distintos
-    for chat_id, datos in usuarios_db.items():
-        p_venta = obtener_precio_competencia("TU_VENTA", datos['f_venta'])
-        p_compra = obtener_precio_competencia("TU_COMPRA", datos['f_compra'])
-        
-        if p_venta > 0 and p_compra > 0:
-            print(f"User {chat_id} | V({datos['f_venta']}):{p_venta} - C({datos['f_compra']}):{p_compra}")
+    print(f"🔎 Revisando mercado para {len(USERS_DB)} usuarios...")
+
+    # --- PASO 1: OBTENER PRECIOS (Optimizamos haciendo solo 2 llamadas para todos) ---
+    # Para hacerlo simple, usaremos un promedio de filtros o un filtro estándar para obtener el precio base
+    # NOTA: En un bot avanzado, agruparíamos usuarios por filtros similares. 
+    # Aquí usaremos un filtro genérico de 1.000.000 VES para obtener una referencia de precio rápida.
+    # Si quieres exactitud total por usuario, habría que mover esto dentro del loop (pero es más lento).
+    
+    # Estrategia: Usaremos los filtros del primer usuario activo como referencia (para el prototipo)
+    # O mejor, hacemos la llamada dentro del loop SOLO si el usuario está activo.
+    
+    # Vamos a hacerlo dentro del loop por seguridad de datos, aunque sea un poco más lento.
+    # Binance permite bastantes llamadas, con pocos usuarios no hay problema.
+    
+    for user_id, data in USERS_DB.items():
+        if not data.get('activo'):
+            continue # Si el usuario no configuró capital, lo saltamos
             
-            cap = datos['capital']
+        cap = data['capital']
+        meta = data['meta']
+        f_venta = data['f_venta']
+        f_compra = data['f_compra']
+        
+        # 1. Obtener precios según LOS FILTROS DE ESTE USUARIO
+        p_venta = await obtener_precio_competencia("BUY", f_venta)  # A cómo vende la competencia (donde yo quiero vender)
+        p_compra = await obtener_precio_competencia("SELL", f_compra) # A cómo compra la competencia (donde yo quiero comprar)
+
+        if p_venta and p_compra:
+            # 2. Calcular Matemática P2P
             bruto_ves = cap * p_venta
             neto_ves = bruto_ves * (1 - COMISION_BINANCE)
+            
             bruto_usdt_recuperados = neto_ves / p_compra
             neto_usdt_final = bruto_usdt_recuperados * (1 - COMISION_BINANCE)
+            
             ganancia = neto_usdt_final - cap
             
-            if ganancia >= datos['meta']:
-                await context.bot.send_message(chat_id, 
-                    f"🚨 **¡META ALCANZADA!** 🚨\n"
-                    f"Ganancia: {ganancia:.2f} USDT\n"
-                    f"Venta (F:{datos['f_venta']}): {p_venta}\n"
-                    f"Compra (F:{datos['f_compra']}): {p_compra}", 
-                    parse_mode="Markdown")
+            # 3. Verificar si cumple LA META DE ESTE USUARIO
+            if ganancia >= meta:
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=f"🚨 **¡ALERTA PARA TI!** 🚨\n\n"
+                             f"💰 **Ganancia:** {ganancia:.2f} USDT (Meta: {meta})\n"
+                             f"🟢 Vende a: {p_venta}\n"
+                             f"🔴 Compra a: {p_compra}\n"
+                             f"📊 Capital: {cap}",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    print(f"No se pudo enviar mensaje a {user_id}: {e}")
 
 if __name__ == '__main__':
-    
     from keep_alive import keep_alive
     keep_alive()
     
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("config", config))
-    app.add_handler(CommandHandler("filtros", filtros)) # <--- NUEVO COMANDO
+    app.add_handler(CommandHandler("filtros", filtros))
     app.add_handler(CommandHandler("status", status))
-    app.job_queue.run_repeating(vigilar_mercado, interval=TIEMPO_REVISION, first=10)
-    print("🤖 Bot Manual Corriendo...")
-    app.run_polling()
-
     
-
-
-
-
-
+    # Revisamos cada 60 segundos
+    app.job_queue.run_repeating(vigilar_mercado, interval=TIEMPO_REVISION, first=10)
+    
+    print("🤖 Bot Comunitario Corriendo...")
+    app.run_polling()
